@@ -34,8 +34,6 @@ The project supports both fully standalone init scripts and compact dsInit confi
 ```text
 /etc/dsInitd/
 ├── dsinitctl
-├── SPECIFIKACIO.md
-│
 ├── daemons/
 │   └── ...
 │
@@ -76,6 +74,12 @@ apt install bash-completion nano
 The system uses traditional SysV init compatibility provided by Debian.
 
 ### Installation
+
+Quick installation directly from GitHub:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/novarobot/dsInitd/main/templates/install | sudo bash
+```
 
 Copy the `etc` directory from the release package directly to the root filesystem:
 
@@ -352,11 +356,6 @@ Detailed Perl documentation:
 perldoc /etc/dsInitd/dsinitctl
 ```
 
-The full project specification is available in:
-
-```text
-/etc/dsInitd/SPECIFIKACIO.md
-```
 
 ---
 
@@ -393,6 +392,12 @@ Kétféle szolgáltatást támogat:
 * külön systemd unit fájlok nélkül is használható
 
 ## Telepítés
+
+Gyors telepítés közvetlenül GitHubról:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/novarobot/dsInitd/main/templates/install | sudo bash
+```
 
 A release csomag `etc` könyvtárát másold közvetlenül a rendszer gyökerébe:
 
@@ -575,11 +580,6 @@ Részletes beépített dokumentáció:
 perldoc /etc/dsInitd/dsinitctl
 ```
 
-A teljes rendszer specifikációja:
-
-```text
-/etc/dsInitd/SPECIFIKACIO.md
-```
 
 ---
 
@@ -588,4 +588,3 @@ A teljes rendszer specifikációja:
 Choose the license that best fits the project before publishing the repository.
 
 For an open-source system utility, common options include MIT, BSD-2-Clause, BSD-3-Clause and GPL-3.0.
-
