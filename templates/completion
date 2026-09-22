@@ -1,0 +1,26 @@
+# Bash completion for dsinitctl. Lazy-load via /usr/share/bash-completion/completions/dsinitctl.
+_dsinitctl_complete()
+{
+	local cur prev words cword
+	COMPREPLY=()
+	cur="${COMP_WORDS[COMP_CWORD]}"
+	if (( COMP_CWORD == 1 )); then
+		COMPREPLY=( $(compgen -W 'start stop restart status show reshow enable disable enable-dsi enable-sys disable-dsi disable-sys create-standalone create-dsInit cs cd help man edit read remove dsinitd-enable dsinitd-disable dsinitd-status dsinitd-help completion' -- "$cur") )
+		return
+	fi
+	if (( COMP_CWORD != 2 )); then
+		return
+	fi
+	case "${COMP_WORDS[1]}" in
+		create-standalone|create-dsInit|cs|cd|dsinitd-*) return ;;
+		start|stop|restart|status|show|reshow|enable|disable|enable-dsi|enable-sys|disable-dsi|disable-sys|help|man|edit|read|remove)
+			local path entry
+			for path in /etc/dsInitd/daemons/*; do
+				[[ -f "$path" ]] || continue
+				entry="${path##*/}"
+				[[ "$entry" == "$cur"* ]] && COMPREPLY+=("$entry")
+			done
+			;;
+	esac
+}
+complete -F _dsinitctl_complete dsinitctl /etc/dsInitd/dsinitctl /sbin/dsinitctl

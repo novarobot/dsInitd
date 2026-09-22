@@ -1,0 +1,42 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          dsInitd-auto
+# Required-Start:    $local_fs $remote_fs
+# Required-Stop:     $local_fs $remote_fs
+# Should-Start:      $network
+# Should-Stop:       $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: dsInitd centralis szolgaltatasindito
+# Description:       A dsInitd DSI modban regisztralt szolgaltatasait inditja es leallitja.
+### END INIT INFO
+
+BASE=/etc/dsInitd/inits
+case "${1:-}" in
+	start|stop|restart|status)
+		ACTION=$1
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart|status}" >&2
+		exit 2
+		;;
+esac
+FAILED=0
+TOTAL=0
+# A shell glob rendezett sorrendben jarja be a neveket; ures konyvtarnal nincs talalat.
+for ITEM in "$BASE"/*
+do
+	[ -e "$ITEM" ] || continue
+	[ -f "$ITEM" ] && [ -x "$ITEM" ] || {
+		echo "HIBA: nem futtathato indito: $ITEM" >&2
+		FAILED=$((FAILED + 1))
+		continue
+	}
+	TOTAL=$((TOTAL + 1))
+	if ! "$ITEM" "$ACTION"; then
+		echo "HIBA: $ITEM ($ACTION)" >&2
+		FAILED=$((FAILED + 1))
+	fi
+done
+echo "dsInitd: feldolgozva=$TOTAL hibas=$FAILED muvelet=$ACTION"
+[ "$FAILED" -eq 0 ]

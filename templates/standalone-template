@@ -1,0 +1,153 @@
+#!/bin/sh
+### BEGIN INIT INFO
+# Provides:          TEMPLATE
+# Required-Start:    $local_fs $remote_fs
+# Required-Stop:     $local_fs $remote_fs
+# Should-Start:      $network
+# Should-Stop:       $network
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description:
+# Description:
+### END INIT INFO
+
+# 1. Konfiguracio
+PROCCESSNAME="TEMPLATE"
+PIDFILE="/run/${PROCCESSNAME}.pid"
+LOGFILE="/var/log/${PROCCESSNAME}.log"
+RUNAS="root"
+SESSION="$PROCCESSNAME"
+PROCCESSCMD='ADD_COMMAND'
+
+screen_as_user()
+{
+	if [ "$RUNAS" = root ]; then
+		screen "$@"
+	else
+		runuser -u "$RUNAS" -- screen "$@"
+	fi
+}
+
+screen_pid()
+{
+	screen_as_user -ls 2>/dev/null | awk -v session="$SESSION" '
+		$1 ~ /^[0-9]+\./ {
+			pid = $1
+			sub(/\..*$/, "", pid)
+			name = $1
+			sub(/^[0-9]+\./, "", name)
+			if (name == session) {
+				print pid
+				exit
+			}
+		}'
+}
+
+start()
+{
+	if ! command -v screen >/dev/null 2>&1; then
+		echo "HIBA: screen szukseges (apt install screen)." >&2
+		return 1
+	fi
+	if [ "$RUNAS" != root ] && ! id "$RUNAS" >/dev/null 2>&1; then
+		echo "HIBA: ismeretlen felhasznalo: $RUNAS" >&2
+		return 1
+	fi
+	PID=$(screen_pid)
+	if [ -n "$PID" ]; then
+		printf '%s\n' "$PID" > "$PIDFILE"
+		echo "$PROCCESSNAME mar fut (PID: $PID)."
+		return 0
+	fi
+	rm -f "$PIDFILE"
+	echo "Inditas: $PROCCESSNAME" | tee -a "$LOGFILE"
+	# A kis -dm hatterben indit es azonnal visszater. NEM -Dm!
+	if ! screen_as_user -dmS "$SESSION" /bin/sh -c "$PROCCESSCMD"; then
+		echo "HIBA: Screen inditasi hiba." | tee -a "$LOGFILE" >&2
+		return 1
+	fi
+	N=0
+	while [ "$N" -lt 10 ]; do
+		PID=$(screen_pid)
+		if [ -n "$PID" ]; then
+			printf '%s\n' "$PID" > "$PIDFILE"
+			echo "$PROCCESSNAME elindult (Screen PID: $PID)." | tee -a "$LOGFILE"
+			return 0
+		fi
+		N=$((N + 1))
+		sleep 1
+	done
+	echo "HIBA: a munkamenet nem jott letre vagy a program kilepett." | tee -a "$LOGFILE" >&2
+	return 1
+}
+
+stop()
+{
+	PID=$(screen_pid)
+	if [ -z "$PID" ]; then
+		rm -f "$PIDFILE"
+		echo "$PROCCESSNAME nem fut."
+		return 0
+	fi
+	if ! screen_as_user -S "$PID.$SESSION" -X quit; then
+		echo "HIBA: nem sikerult leallitani a Screen munkamenetet." >&2
+		return 1
+	fi
+	N=0
+	while [ "$N" -lt 10 ]; do
+		if [ -z "$(screen_pid)" ]; then
+			rm -f "$PIDFILE"
+			echo "$PROCCESSNAME leallt." | tee -a "$LOGFILE"
+			return 0
+		fi
+		N=$((N + 1))
+		sleep 1
+	done
+	echo "HIBA: a munkamenet meg mindig fut." >&2
+	return 1
+}
+
+status()
+{
+	PID=$(screen_pid)
+	if [ -n "$PID" ]; then
+		echo "$PROCCESSNAME fut (Screen PID: $PID)."
+		return 0
+	fi
+	echo "$PROCCESSNAME nem fut."
+	return 3
+}
+
+show()
+{
+	PID=$(screen_pid)
+	if [ -z "$PID" ]; then
+		echo "$PROCCESSNAME nem fut." >&2
+		return 1
+	fi
+	if [ ! -t 1 ] || [ ! -r /dev/tty ]; then
+		echo "HIBA: a show interaktiv terminalt igenyel." >&2
+		return 1
+	fi
+	screen_as_user -d -r "$PID.$SESSION" </dev/tty >/dev/tty 2>/dev/tty
+}
+
+restart()
+{
+	stop && start
+}
+
+reshow()
+{
+	restart && show
+}
+
+case "${1:-}" in
+	start) start ;;
+	stop) stop ;;
+	restart) restart ;;
+	status) status ;;
+	show) show ;;
+	reshow) reshow ;;
+	*) echo "Usage: $0 {start|stop|restart|status|show|reshow}" >&2; exit 2 ;;
+esac

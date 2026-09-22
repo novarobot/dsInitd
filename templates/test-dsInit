@@ -1,0 +1,11 @@
+PROCCESSCMD='exec htop'
+PROCCESSNAME="TEMPLATE"
+RUNAS="root"
+SHORTDESCRIPTION="dsInitd htop teszt"
+DESCRIPTION="htop futtatasa GNU Screen alatt, konfiguracios daemon."
+REQUIRED_START='$local_fs $remote_fs'
+REQUIRED_STOP='$local_fs $remote_fs'
+SHOULD_START='$network'
+SHOULD_STOP='$network'
+DEFAULT_START='2 3 4 5'
+DEFAULT_STOP='0 1 6'
