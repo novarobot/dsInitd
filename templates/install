@@ -1,4 +1,3 @@
-```sh
 #!/bin/sh
 #
 # dsInitd interactive installer / interaktiv telepito
@@ -608,4 +607,3 @@ info " A dsInitd $VERSION telepito befejezodott."
 info " dsInitd $VERSION installation has finished."
 info "============================================================"
 info ""
-```
