@@ -1,0 +1,869 @@
+#!/bin/bash
+
+# Ha source paranccsal hivtak:
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+	source /etc/dsInitd/templates/completion
+	return 0
+fi
+
+exec /usr/bin/perl -x "$0" "$@"
+
+#!/usr/bin/perl
+use strict;
+use warnings;
+use utf8;
+use bytes;
+use File::Basename qw(basename);
+use File::Copy qw(copy);
+use File::Spec;
+use Fcntl qw(:flock);
+
+my $BASE = '/etc/dsInitd';
+my $DAEMONS = "$BASE/daemons";
+my $TEMPLATES = "$BASE/templates";
+my $DSI = "$BASE/inits";
+my $SYS = "$BASE/init.d";
+my $SYSTEM = '/etc/init.d';
+my @ACTIONS = qw(start stop restart status show reshow);
+my %ACTION = map { $_ => 1 } @ACTIONS;
+my %LSB = (
+	REQUIRED_START => ['Required-Start', '\$local_fs \$remote_fs'],
+	REQUIRED_STOP => ['Required-Stop', '\$local_fs \$remote_fs'],
+	SHOULD_START => ['Should-Start', '\$network'],
+	SHOULD_STOP => ['Should-Stop', '\$network'],
+	DEFAULT_START => ['Default-Start', '2 3 4 5'],
+	DEFAULT_STOP => ['Default-Stop', '0 1 6'],
+);
+my %ALLOWED = map { $_ => 1 } (qw(PROCCESSCMD PROCCESSNAME RUNAS SHORTDESCRIPTION DESCRIPTION), keys %LSB);
+my @NO_NAME = qw(dsinitd-enable dsinitd-disable dsinitd-status dsinitd-help completion);
+
+sub fail
+{
+	my ($msg) = @_;
+	die "HIBA: $msg\n";
+}
+
+sub name_check
+{
+	my ($name) = @_;
+	defined($name) && $name =~ /\A[a-zA-Z0-9][a-zA-Z0-9_.-]*\z/ && $name !~ /\A\.\.?\z/
+		or fail('ervenytelen szolgaltatasnev; csak betuk, szamok, pont, _ es - engedelyezett');
+	return $name;
+}
+
+sub load_text
+{
+	my ($file) = @_;
+	open my $fh, '<', $file or fail("nem olvashato: $file: $!");
+	local $/;
+	my $content = <$fh>;
+	close $fh or fail("olvasasi hiba: $file: $!");
+	return $content;
+}
+
+sub write_atomic
+{
+	my ($path, $content, $mode) = @_;
+	my $temporary = "$path.tmp.$$";
+	-e $temporary || -l $temporary and fail("utkozo ideiglenes fajl: $temporary");
+	open my $fh, '>', $temporary or fail("nem irhato: $temporary: $!");
+	my $printed = print {$fh} $content;
+	my $closed = close($fh);
+	my $permissions = chmod($mode, $temporary);
+	if (!$printed || !$closed || !$permissions)
+	{
+		unlink $temporary;
+		fail("nem sikerult kiirni: $path: $!");
+	}
+	rename $temporary, $path or do { unlink $temporary; fail("atnevezes sikertelen: $path: $!") };
+}
+
+sub shell_quote
+{
+	my ($value) = @_;
+	$value =~ s/'/'"'"'/g;
+	return "'$value'";
+}
+
+# Szandekosan csak literal egyszeres/kettos idezojeles ertekek; nincs shell eval.
+# Tamogatja a tobb soros, egyszeres idezojeles parancsokat es a szokasos \-escape-eket.
+sub parse_config
+{
+	my ($file, $name) = @_;
+	my $src = load_text($file);
+	my %config;
+	pos($src) = 0;
+	while (pos($src) < length($src))
+	{
+		$src =~ /\G[ \t]*(?:\#[^\n]*|\r?\n)/gc and next;
+		$src =~ /\G[ \t]*([A-Z_]+)[ \t]*=[ \t]*/gc or fail("hibas konfiguracio: $file a(z) " . (1 + (() = substr($src, 0, pos($src)) =~ /\n/g)) . '. sor kornyeken');
+		my $key = $1;
+		$ALLOWED{$key} or fail("ismeretlen konfiguracios mezo: $key ($file)");
+		!exists($config{$key}) or fail("ismetelt konfiguracios mezo: $key ($file)");
+		my $quote;
+		if ($src =~ /\G(['"])/gc) { $quote = $1; }
+		else { fail("a(z) $key erteket idezojelbe kell tenni ($file)"); }
+		my $value = '';
+		my $closed = 0;
+		while (pos($src) < length($src))
+		{
+			$src =~ /\G(.)/gcs or last;
+			my $char = $1;
+			if ($char eq $quote) { $closed = 1; last; }
+			# A literal single-quoted konfiguracioban a backslash valtozatlan.
+			# Dupla idezojelnel is literal: az LSB $local_fs nem shell valtozo.
+			$value .= $char;
+		}
+		$closed or fail("lezaratlan idezojel: $key ($file)");
+		$src =~ /\G[ \t]*(?:\#[^\n]*)?(?:\r?\n|\z)/gc or fail("szemet az ertek utan: $key ($file)");
+		$config{$key} = $value;
+	}
+	defined($config{PROCCESSCMD}) && $config{PROCCESSCMD} =~ /\S/ && $config{PROCCESSCMD} ne 'ADD_COMMAND'
+		or fail("hianyzo vagy kitoltetlen PROCCESSCMD: $file");
+	$config{PROCCESSNAME} = $name unless defined($config{PROCCESSNAME}) && length($config{PROCCESSNAME});
+	name_check($config{PROCCESSNAME});
+	$config{PROCCESSNAME} eq $name or fail("PROCCESSNAME nem egyezik a fajlnevevel: $name");
+	$config{RUNAS} = 'root' unless defined($config{RUNAS}) && length($config{RUNAS});
+	$config{RUNAS} =~ /\A[a-z_][a-z0-9_-]*\$?\z/i or fail('ervenytelen RUNAS');
+	defined(getpwnam($config{RUNAS})) or fail("nem letezo RUNAS felhasznalo: $config{RUNAS}");
+	$config{SHORTDESCRIPTION} //= '';
+	$config{DESCRIPTION} //= '';
+	for my $key (keys %LSB, qw(SHORTDESCRIPTION DESCRIPTION))
+	{
+		next unless defined($config{$key});
+		$config{$key} !~ /[\r\n\x00]/ or fail("tiltott vezerlokarakter: $key");
+	}
+	for my $key (qw(DEFAULT_START DEFAULT_STOP))
+	{
+		next unless exists $config{$key};
+		$config{$key} =~ /\A[0-6](?:[ \t]+[0-6])*\z/ or fail("ervenytelen futasi szintek: $key");
+	}
+	for my $key (qw(REQUIRED_START REQUIRED_STOP SHOULD_START SHOULD_STOP))
+	{
+		next unless exists $config{$key};
+		$config{$key} =~ /\A[a-zA-Z0-9_\$ .-]*\z/ or fail("ervenytelen fuggoseg: $key");
+	}
+	return \%config;
+}
+
+sub config_for
+{
+	my ($name) = @_;
+	name_check($name);
+	my $file = "$DAEMONS/$name";
+	-f $file && !-l $file or fail("hianyzo vagy symlink daemon: $name");
+	my @stat = stat($file);
+	@stat && $stat[4] == 0 && !($stat[2] & 0022)
+		or fail("nem biztonsagos tulajdonos/jogosultsag: $name (root tulajdon, nincs group/other iras)");
+	return ($file, undef) if -x $file;
+	return ($file, parse_config($file, $name));
+}
+
+sub validate_standalone
+{
+	my ($file, $name) = @_;
+	my $src = load_text($file);
+	$src =~ /\A\#\!\/bin\/sh\b/ or fail("standalone shebang hianyzik: $name");
+	$src =~ /^\# Provides:\s*\Q$name\E\s*$/m or fail("standalone Provides nem egyezik: $name");
+	$src =~ /### BEGIN INIT INFO/ && $src =~ /### END INIT INFO/ or fail("standalone LSB fejlec hianyzik: $name");
+	$src !~ /PROCCESSCMD=['"]ADD_COMMAND['"]/ or fail("standalone parancs kitoltetlen: $name");
+	system('/bin/sh', '-n', $file) == 0 or fail("standalone shell szintaktikai hiba: $name");
+}
+
+sub launcher_content
+{
+	my ($name, $cfg) = @_;
+	my $text = load_text("$TEMPLATES/run-template");
+	for my $k (keys %LSB)
+	{
+		my ($field) = @{$LSB{$k}};
+		my $v = exists($cfg->{$k}) ? $cfg->{$k} : undef;
+		next unless defined $v;
+		$text =~ s/^(\# \Q$field\E:\s*).*$/"$1$v"/me or fail("run-template mezo hianyzik: $field");
+	}
+	my %replace = ( '__SERVICE_NAME__' => $name,
+		'__SHORT_DESCRIPTION__' => $cfg->{SHORTDESCRIPTION},
+		'__DESCRIPTION__' => $cfg->{DESCRIPTION});
+	for my $placeholder (keys %replace)
+	{
+		my $value = $replace{$placeholder};
+		$text =~ s/\Q$placeholder\E/$value/g;
+	}
+	$text =~ /^\# Provides:\s*\Q$name\E\s*$/m or fail('run-template Provides hiba');
+	$text =~ /exec \Q$BASE\E\/dsinitctl "\$1" "\Q$name\E"/ or fail('run-template exec hiba');
+	# shell -n stdin: nem irunk temp fajlt a validalashoz.
+	open my $sh, '|-', '/bin/sh', '-n' or fail('shell ellenorzes nem indithato');
+	print {$sh} $text;
+	close($sh) or fail('general indito shell szintaktikai hiba');
+	return $text;
+}
+
+sub runtime_content
+{
+	my ($name, $cfg) = @_;
+	my $src = load_text("$TEMPLATES/standalone-template");
+	my %replace = (
+		'PROCCESSCMD' => shell_quote($cfg->{PROCCESSCMD}),
+		'PROCCESSNAME' => shell_quote($name),
+		'RUNAS' => shell_quote($cfg->{RUNAS}),
+	);
+	for my $key (keys %replace)
+	{
+		$src =~ s/^\Q$key\E=[^\n]*$/$key=$replace{$key}/m or fail("standalone-template mezo hianyzik: $key");
+	}
+	$src =~ s/^\# Provides:\s*TEMPLATE\s*$/"# Provides:          $name"/me or fail('standalone-template Provides hianyzik');
+	open my $sh, '|-', '/bin/sh', '-n' or fail('shell ellenorzes nem indithato');
+	print {$sh} $src;
+	close($sh) or fail('general futtato shell szintaktikai hiba');
+	return $src;
+}
+
+sub run_memory
+{
+	my ($src, $action) = @_;
+	# pipe stdin a /bin/sh -s action reszere, a shell kod sosem kerul lemezre.
+	my $pid = open(my $sh, '|-', '/bin/sh', '-s', '--', $action);
+	defined($pid) or fail("nem indithato shell: $!");
+	print {$sh} $src or fail("nem irhato a shell stdin: $!");
+	close($sh);
+	return $? == -1 ? 1 : ($? & 127 ? 128 + ($? & 127) : $? >> 8);
+}
+
+sub lock_registry
+{
+	open my $fh, '>>', "$BASE/.dsinitctl.lock" or fail("lock fajl nem nyithato: $!");
+	flock($fh, LOCK_EX) or fail("lock hiba: $!");
+	return $fh;
+}
+
+sub is_link_to
+{
+	my ($link, $target) = @_;
+	return -l $link && readlink($link) eq $target;
+}
+
+sub link_safe
+{
+	my ($target, $link) = @_;
+	if (-e $link || -l $link)
+	{
+		is_link_to($link, $target) or fail("idegen fajl vagy link: $link");
+		return 0;
+	}
+	symlink($target, $link) or fail("symlink hiba: $link: $!");
+	return 1;
+}
+
+sub unlink_safe
+{
+	my ($target, $link) = @_;
+	return 0 unless -e $link || -l $link;
+	is_link_to($link, $target) or fail("idegen fajl vagy link: $link");
+	unlink($link) or fail("nem torolheto link: $link: $!");
+	return 1;
+}
+
+sub sys_registered
+{
+	my ($name) = @_;
+	return (-e "$SYS/$name" || -l "$SYS/$name" || -e "$SYSTEM/$name" || -l "$SYSTEM/$name");
+}
+
+sub dsi_registered
+{
+	my ($name) = @_;
+	return -e "$DSI/$name" || -l "$DSI/$name";
+}
+
+sub update_rc
+{
+	my (@arguments) = @_;
+	system('update-rc.d', @arguments) == 0 or fail('update-rc.d sikertelen: ' . join(' ', @arguments));
+}
+
+sub daemon_enable
+{
+	my ($mode, $name) = @_;
+	my ($file, $cfg) = config_for($name);
+	if ($mode eq 'dsi' && sys_registered($name)) { fail("$name mar SYS modban regisztralt; elobb disable-sys $name"); }
+	if ($mode eq 'sys' && dsi_registered($name)) { fail("$name mar DSI modban regisztralt; elobb disable-dsi $name"); }
+	my $src;
+	if ($cfg)
+	{
+		# Az engedelyezes elott mindket generator teljes ellenorzese kotelezo.
+		runtime_content($name, $cfg);
+		$src = launcher_content($name, $cfg);
+	}
+	else { validate_standalone($file, $name); }
+	my $folder = $mode eq 'sys' ? $SYS : $DSI;
+	my $entry = "$folder/$name";
+	my $system_link = "$SYSTEM/$name";
+	if (-e $entry || -l $entry)
+	{
+		if ($cfg)
+		{
+			-l $entry and fail("idegen symlink: $entry");
+			my $content = load_text($entry);
+			$content =~ /^\# Provides:\s*\Q$name\E\s*$/m && $content =~ /exec \Q$BASE\E\/dsinitctl/ or fail("idegen indito: $entry");
+		}
+		else { is_link_to($entry, $file) or fail("idegen symlink: $entry"); }
+		if ($mode eq 'sys')
+		{
+			is_link_to($system_link, $entry) or fail("nem teljes SYS regisztracio: $name");
+		}
+		print "$name: mar engedelyezve ($mode); nincs ujrageneralas.\n";
+		return;
+	}
+	if ($mode eq 'sys' && (-e $system_link || -l $system_link)) { fail("idegen rendszerfajl: $system_link"); }
+	if ($cfg) { write_atomic($entry, $src, 0755); }
+	else { link_safe($file, $entry); }
+	if ($mode eq 'sys')
+	{
+		my $created = 0;
+		eval {
+			$created = link_safe($entry, $system_link);
+			update_rc($name, 'defaults');
+			1;
+		} or do {
+			my $error = $@;
+			unlink_safe($entry, $system_link) if $created;
+			if ($cfg) { unlink($entry); }
+			else { unlink_safe($file, $entry); }
+			die $error;
+		};
+		system('systemctl', 'daemon-reload') if -d '/run/systemd/system';
+	}
+	print "$name: $mode engedelyezve.\n";
+}
+
+sub daemon_disable
+{
+	my ($mode, $name) = @_;
+	name_check($name);
+	my $file = "$DAEMONS/$name";
+	my $folder = $mode eq 'sys' ? $SYS : $DSI;
+	my $entry = "$folder/$name";
+	my $system_link = "$SYSTEM/$name";
+	if ($mode eq 'sys')
+	{
+		if (-e $system_link || -l $system_link)
+		{
+			is_link_to($system_link, $entry) or fail("idegen rendszerfajl: $system_link");
+			update_rc('-f', $name, 'remove');
+			unlink_safe($entry, $system_link);
+		}
+		elsif (-e $entry || -l $entry) { fail("hianyzo rendszerlink: $system_link; nem toroljuk a reszleges regisztraciot"); }
+	}
+	if (-e $entry || -l $entry)
+	{
+		if (-l $entry) { unlink_safe($file, $entry); }
+		else
+		{
+			-f $entry && -f $file && !-x $file or fail("nem sajat generalt indito: $entry");
+			my $content = load_text($entry);
+			$content =~ /^\# Provides:\s*\Q$name\E\s*$/m && $content =~ /exec \Q$BASE\E\/dsinitctl/ or fail("nem felismerheto generalt indito: $entry");
+			unlink($entry) or fail("nem torolheto: $entry: $!");
+		}
+	}
+	system('systemctl', 'daemon-reload') if $mode eq 'sys' && -d '/run/systemd/system';
+	print "$name: $mode letiltva (futo folyamat erintetlen).\n";
+}
+
+sub auto_enable
+{
+	my $target = "$TEMPLATES/dsInitd-auto";
+	my $marker = "$TEMPLATES/dsInitd-auto.enabled";
+	my $syslink = "$SYSTEM/dsInitd-auto";
+	-f $target && -x $target or fail('dsInitd-auto nem futtathato');
+	my $created_marker = link_safe($target, $marker);
+	my $created_sys = 0;
+	eval {
+		$created_sys = link_safe($marker, $syslink);
+		update_rc('dsInitd-auto', 'defaults');
+		1;
+	} or do {
+		my $error = $@;
+		unlink_safe($marker, $syslink) if $created_sys;
+		unlink_safe($target, $marker) if $created_marker;
+		die $error;
+	};
+	system('systemctl', 'daemon-reload') if -d '/run/systemd/system';
+	print "dsInitd-auto engedelyezve.\n";
+}
+
+sub auto_disable
+{
+	my $target = "$TEMPLATES/dsInitd-auto";
+	my $marker = "$TEMPLATES/dsInitd-auto.enabled";
+	my $syslink = "$SYSTEM/dsInitd-auto";
+	if (-e $syslink || -l $syslink)
+	{
+		is_link_to($syslink, $marker) or fail("idegen rendszerlink: $syslink");
+		update_rc('-f', 'dsInitd-auto', 'remove');
+		unlink_safe($marker, $syslink);
+	}
+	unlink_safe($target, $marker);
+	system('systemctl', 'daemon-reload') if -d '/run/systemd/system';
+	print "dsInitd-auto letiltva (futo folyamat erintetlen).\n";
+}
+
+# Teljes eltavolitas: csak sajat bejegyzeseket erint, es a stop kotelezo.
+sub daemon_remove
+{
+	my ($name) = @_;
+	my ($file, $cfg) = config_for($name);
+	my $dsi = dsi_registered($name);
+	my $sys = sys_registered($name);
+	my $sys_entry = "$SYS/$name";
+	my $dsi_entry = "$DSI/$name";
+	my $system_link = "$SYSTEM/$name";
+	# Minden objektumot elore validalunk, mielott a folyamatot megallitjuk.
+	if ($sys)
+	{
+		(-l $system_link && is_link_to($system_link, $sys_entry))
+			or fail("hianyzo vagy idegen /etc/init.d bejegyzes: $name");
+	}
+	for my $entry (($dsi ? ($dsi_entry) : ()), ($sys ? ($sys_entry) : ()))
+	{
+		if ($cfg)
+		{
+			-f $entry && !-l $entry or fail("idegen indito: $entry");
+			my $src = load_text($entry);
+			$src =~ /^\# Provides:\s*\Q$name\E\s*$/m &&
+			$src =~ /exec \Q$BASE\E\/dsinitctl "\$1" "\Q$name\E"/
+				or fail("nem felismerheto dsInit indito: $entry");
+		}
+		else { is_link_to($entry, $file) or fail("idegen standalone link: $entry"); }
+	}
+	my $rc = $cfg ? run_memory(runtime_content($name, $cfg), 'stop') : do
+	{
+		system($file, 'stop');
+		$? == -1 ? 1 : ($? & 127 ? 128 + ($? & 127) : $? >> 8);
+	};
+	$rc == 0 or fail("leallitas sikertelen ($rc); nem toroljuk: $name");
+	# A status nem lehet 0 (fut) vagy 1 (hiba); csak a 3 igazolja a leallast.
+	my $status = $cfg ? run_memory(runtime_content($name, $cfg), 'status') : do
+	{
+		system($file, 'status');
+		$? == -1 ? 1 : ($? & 127 ? 128 + ($? & 127) : $? >> 8);
+	};
+	$status == 3 or fail("a leallas nem igazolhato (status=$status): $name");
+	daemon_disable('dsi', $name) if $dsi;
+	daemon_disable('sys', $name) if $sys;
+	unlink($file) or fail("nem torolheto a daemon fajl: $file: $!");
+	print "$name: leallitva, regisztraciok es daemon torolve.\n";
+}
+
+sub daemon_names
+{
+	opendir(my $dir, $DAEMONS) or fail("daemons nem olvashato: $!");
+	my @names = sort grep { $_ !~ /^\./ && -f "$DAEMONS/$_" && !-l "$DAEMONS/$_" } readdir($dir);
+	closedir($dir);
+	return @names;
+}
+
+sub runlevels
+{
+	my ($name) = @_;
+	my @levels;
+	for my $level (0 .. 6)
+	{
+		my @links = glob("/etc/rc$level.d/S[0-9][0-9]$name");
+		push @levels, $level if grep { -l $_ } @links;
+	}
+	return @levels ? join(',', @levels) : '-';
+}
+
+# Az allapotjelentes nem inditja el es nem allitja le a szolgaltatast.
+# A Screen sajat munkamenetlistajabol vizsgalja a tenyleges futast.
+sub daemon_running
+{
+	my ($name, $file) = @_;
+	return 'UNKNOWN' unless -x '/usr/bin/screen' || system('/bin/sh', '-c', 'command -v screen >/dev/null 2>&1') == 0;
+	my ($user, $session) = ('root', $name);
+	if (-x $file)
+	{
+		my $src = eval { load_text($file) };
+		return 'ERROR' if $@;
+		$user = $1 if $src =~ /^RUNAS=["']([a-zA-Z_][a-zA-Z0-9_-]*)["']\s*$/m;
+		$session = $1 if $src =~ /^SESSION=["']([^"'\r\n]+)["']\s*$/m && $1 !~ /\$/;
+	}
+	else
+	{
+		my $cfg = eval { parse_config($file, $name) };
+		return 'ERROR' if $@;
+		$user = $cfg->{RUNAS};
+	}
+	return 'ERROR' unless defined getpwnam($user);
+	my @command = $user eq 'root' ? ('screen', '-ls') : ('runuser', '-u', $user, '--', 'screen', '-ls');
+	open my $output, '-|', @command or return 'UNKNOWN';
+	my $running = 0;
+	while (my $line = <$output>)
+	{
+		if ($line =~ /^\s*([0-9]+)\.([^\s]+)\s/ && $2 eq $session)
+		{
+			$running = 1;
+		}
+	}
+	close $output;
+	return $running ? 'YES' : 'NO';
+}
+
+sub full_status
+{
+	my $marker = "$TEMPLATES/dsInitd-auto.enabled";
+	print 'Centralis dsInitd: ', is_link_to($marker, "$TEMPLATES/dsInitd-auto") ? 'ENABLED' : 'DISABLED', "\n";
+	printf "%-36s %-12s %-8s %-8s %-10s %-8s %-8s\n", qw(DAEMON TYPE DSI SYS RUNLEVELS SYSTEM RUNNING);
+	for my $name (daemon_names())
+	{
+		my $file = "$DAEMONS/$name";
+		my $dsi = dsi_registered($name) ? 'YES' : 'NO';
+		my $sys = sys_registered($name) ? 'YES' : 'NO';
+		my $system = is_link_to("$SYSTEM/$name", "$SYS/$name") ? 'OK' : ($sys eq 'YES' ? 'MISSING' : '-');
+		printf "%-36s %-12s %-8s %-8s %-10s %-8s %-8s\n", $name, (-x $file ? 'standalone' : 'dsInit'), $dsi, $sys, runlevels($name), $system, daemon_running($name, $file);
+	}
+}
+
+sub create_daemon
+{
+	my ($type, $name) = @_;
+	name_check($name);
+	my $template = $type eq 'standalone' ? "$TEMPLATES/standalone-template" : "$TEMPLATES/dsInit-template";
+	my $destination = "$DAEMONS/$name";
+	-e $destination || -l $destination and fail("mar letezik: $destination");
+	my $src = load_text($template);
+	if ($type eq 'standalone')
+	{
+		$src =~ s/^\# Provides:\s*TEMPLATE\s*$/"# Provides:          $name"/me or fail('Provides sablonsor nem talalhato');
+	}
+	$src =~ s/^PROCCESSNAME="TEMPLATE"$/"PROCCESSNAME=\"$name\""/me or fail('PROCCESSNAME sablonsor nem talalhato');
+	write_atomic($destination, $src, $type eq 'standalone' ? 0755 : 0644);
+	print "Letrehozva: $destination\n";
+	if (-t 0 && -t 1)
+	{
+		system('nano', $destination) == 0 or fail('nano sikertelen; automatikus engedelyezes kihagyva');
+		print "Engedelyezzem? dsinitctl enable $name [y/N] ";
+		my $answer = <STDIN> // '';
+		if ($answer =~ /\A\s*(?:y|yes|i|igen)\s*\z/i)
+		{
+			dispatch('enable', $name);
+		}
+	}
+	else { print "Nem interaktiv terminal: nano es engedelyezesi kerdes kihagyva.\n"; }
+}
+
+sub root_required
+{
+	$> == 0 or fail('root jogosultsag szukseges (sudo)');
+}
+
+sub page_text
+{
+	my ($text) = @_;
+	if (-t STDOUT && -t STDIN && system('sh', '-c', 'command -v less >/dev/null 2>&1') == 0)
+	{
+		open my $pager, '|-', 'less', '-R' or fail('less nem indithato');
+		print {$pager} $text;
+		close($pager) or fail('less hibaval lepett ki');
+	}
+	else { print $text; }
+}
+
+sub short_help
+{
+	print <<'HELP';
+dsInitd V0.2.2 – vezerlo
+Usage: dsinitctl PARANCS [DAEMON]
+start stop restart status show reshow
+ enable disable enable-dsi enable-sys disable-dsi disable-sys
+ create-standalone (cs) create-dsInit (cd) help man edit read remove
+ dsinitd-enable dsinitd-disable dsinitd-status dsinitd-help completion
+Dokumentacio: perldoc /etc/dsInitd/dsinitctl
+A show/reshow interaktiv: Ctrl+A, majd D = levalasztas.
+HELP
+}
+
+sub dispatch
+{
+	my ($cmd, $name) = @_;
+	defined($cmd) or do { short_help(); return 2; };
+	if ($cmd eq 'dsinitd-help') { short_help(); return 0; }
+	if ($cmd eq 'completion')
+	{
+		defined($name) and fail('completion nem fogad parametert');
+		print 'source dsinitctl', "\n";
+		print STDERR 'Az aktualis Bash terminalban: source dsinitctl', "\n" if -t STDERR;
+		return 0;
+	}
+	if ($cmd eq 'dsinitd-status') { defined($name) and fail('nincs masodik parameter'); full_status(); return 0; }
+	if ($cmd eq 'dsinitd-enable' || $cmd eq 'dsinitd-disable')
+	{
+		defined($name) and fail('nincs masodik parameter');
+		root_required();
+		my $lock = lock_registry();
+		$cmd eq 'dsinitd-enable' ? auto_enable() : auto_disable();
+		return 0;
+	}
+	defined($name) or fail("kotelezo a daemon neve: $cmd");
+	name_check($name);
+	if ($cmd eq 'create-standalone' || $cmd eq 'cs' || $cmd eq 'create-dsInit' || $cmd eq 'cd')
+	{
+		root_required();
+		create_daemon($cmd eq 'create-standalone' || $cmd eq 'cs' ? 'standalone' : 'dsInit', $name);
+		return 0;
+	}
+	if ($cmd eq 'remove')
+	{
+		root_required();
+		my $lock = lock_registry();
+		daemon_remove($name);
+		return 0;
+	}
+	if ($cmd =~ /\A(?:enable|disable)(?:-(?:dsi|sys))?\z/)
+	{
+		root_required();
+		my $lock = lock_registry();
+		my $mode = $cmd =~ /-(dsi|sys)\z/ ? $1 : is_link_to("$TEMPLATES/dsInitd-auto.enabled", "$TEMPLATES/dsInitd-auto") ? 'dsi' : 'sys';
+		$cmd =~ /^enable/ ? daemon_enable($mode, $name) : daemon_disable($mode, $name);
+		return 0;
+	}
+	my ($file, $cfg) = config_for($name);
+	if ($cmd eq 'edit')
+	{
+		root_required();
+		system('nano', $file) == 0 or fail('nano sikertelen');
+		print "Mentve. A mar generalt inditok NEM frissulnek.\n";
+		return 0;
+	}
+	if ($cmd eq 'read')
+	{
+		if ($cfg) { print runtime_content($name, $cfg); }
+		else { page_text(load_text($file)); }
+		return 0;
+	}
+	if ($cmd eq 'help' || $cmd eq 'man')
+	{
+		if ($cfg) { print(($cmd eq 'help' ? $cfg->{SHORTDESCRIPTION} : $cfg->{DESCRIPTION}), "\n"); }
+		else { page_text(load_text($file)); }
+		return 0;
+	}
+	$ACTION{$cmd} or fail("ismeretlen parancs: $cmd (dsinitctl dsinitd-help)");
+	if ($cfg)
+	{
+		root_required() unless $cmd eq 'status';
+		return run_memory(runtime_content($name, $cfg), $cmd);
+	}
+	system($file, $cmd);
+	return $? == -1 ? 1 : ($? & 127 ? 128 + ($? & 127) : $? >> 8);
+}
+
+my $exit = eval { @ARGV <= 2 or fail('tul sok parameter'); dispatch(@ARGV) };
+if ($@) { print STDERR $@; exit 1; }
+exit($exit // 0);
+
+__END__
+
+=encoding utf8
+
+=head1 NAME
+
+dsinitctl - dsInitd Perl alapu szolgaltatasvezerlo
+
+=head1 SYNOPSIS
+
+ sudo /etc/dsInitd/dsinitctl create-dsInit mydaemon
+ sudo /etc/dsInitd/dsinitctl enable-sys mydaemon
+ sudo /etc/dsInitd/dsinitctl start mydaemon
+ sudo /etc/dsInitd/dsinitctl status mydaemon
+ sudo /etc/dsInitd/dsinitctl dsinitd-status
+
+=head1 DESCRIPTION
+
+A dsInitd ket daemonformatumot kezel. A futtathato daemons/ fajlok
+onallo SysV shell scriptek; a nem futtathato fajlok adatok, melyekbol a
+vezerlo az eredeti standalone-template alapjan memoriaban shell scriptet
+allit elo. A teljes futtatoscriptet nem menti le lemezre.
+
+=head1 DIRECTORY STRUCTURE
+
+ /etc/dsInitd/dsinitctl
+ /etc/dsInitd/templates/standalone-template
+ /etc/dsInitd/templates/dsInit-template
+ /etc/dsInitd/templates/run-template
+ /etc/dsInitd/templates/dsInitd-auto
+ /etc/dsInitd/templates/dsInitd-auto.enabled (symlink, ha aktiv)
+ /etc/dsInitd/templates/completion
+ /etc/dsInitd/templates/install
+ /etc/dsInitd/templates/remove-test
+ /etc/dsInitd/templates/test-standalone
+ /etc/dsInitd/templates/test-dsInit
+ /etc/dsInitd/SPECIFIKACIO.md
+ /etc/dsInitd/daemons/
+ /etc/dsInitd/inits/
+ /etc/dsInitd/init.d/
+
+=head1 COMMANDS
+
+=head2 Service actions
+
+ start NAME, stop NAME, restart NAME, status NAME, show NAME, reshow NAME
+
+A futtathato standalone fajl megkapja az akciot argumentumkent. A dsInit
+konfiguracio eseten a runtime shell csak memoriaban jon letre. A show
+es reshow interaktiv, Screenbol Ctrl+A majd D a levalasztas.
+
+=head2 Registration
+
+ enable NAME, disable NAME
+ enable-dsi NAME, disable-dsi NAME
+ enable-sys NAME, disable-sys NAME
+
+Az alapertelmezett enable/disable a dsInitd-auto.enabled jelzotol fugg:
+letezo ervenyes symlink = DSI, egyebkent SYS. A SYS es DSI mod nem
+hasznalhato egyszerre, es a program nem valt at automatikusan.
+
+DSI eseten a daemon inditoja az inits/ konyvtarba kerul. SYS eseten
+az init.d/ mappaba, innen abszolut symlink mutat az /etc/init.d/ ala,
+majd update-rc.d regisztralja. A generalt dsInit inditok mindket esetben
+kulon fajlok, egyedi LSB fejleccel. A kesobbi template/config valtozas
+nem frissiti a mar generalt inditokat. A letiltas nem allitja le a
+futo folyamatot. Az idegen fajlok nem irhatok felul.
+
+=head2 Creation and information
+
+ create-standalone NAME / cs NAME
+ create-dsInit NAME / cd NAME
+ help NAME / man NAME / read NAME / edit NAME
+ remove NAME
+
+A letrehozas masolja a sablont, beallitja a nevet, jogosultsagot,
+interaktiv TTY mellett elinditja a nanot es felajanlja az enable-t.
+Nem interaktiv futasnal kihagyja a szerkesztot es a kerdest.
+A dsInit help/man a SHORTDESCRIPTION/DESCRIPTION erteket, a read a
+memoriaban osszeallitott futtatoscriptet irja ki. Standalone eseten a
+help/man/read a teljes fajlt mutatja.
+
+=head2 Central manager
+
+ dsinitd-enable, dsinitd-disable, dsinitd-status, dsinitd-help
+ completion
+
+A kozponti indito az inits/ mappat jarja be, hibas szolgalatatasnal
+folytatja a tobbit. A dsinitd-enable letrehozza a dsInitd-auto.enabled
+jelzo symlinket es az /etc/init.d/dsInitd-auto symlinket, majd
+update-rc.d defaults regisztraciot vegez. A disable ellenkezo iranyban
+eltavolitja a regisztraciot, de a futo programokat nem allitja le.
+
+=head1 STANDALONE WITHOUT DSINITCTL
+
+Standalone szolgaltatas a dsinitctl vezerlo nelkul is hasznalhato.
+Masold at a standalone-template fajlt onallo scriptkent, allitsd be a
+C<Provides:> es C<PROCCESSNAME> erteket azonos, egyedi nevvel, valamint a
+C<PROCCESSCMD> parancsot. Pelda: az egyedi nev C<myservice>:
+
+ sudo cp /etc/dsInitd/templates/standalone-template /etc/init.d/myservice
+ sudo nano /etc/init.d/myservice
+ sudo chmod 755 /etc/init.d/myservice
+ sudo update-rc.d myservice defaults
+ sudo systemctl daemon-reload
+ sudo /etc/init.d/myservice start
+ sudo /etc/init.d/myservice status
+
+A szerkesztoben a C<TEMPLATE> nevet mind a C<# Provides:>, mind a
+C<PROCCESSNAME> sorban csereld C<myservice> ertekre, es az
+C<ADD_COMMAND> helyere valodi parancs keruljon. Ezt a peldat ne
+hajtsd vegre a sablon kitoltese nelkul.
+
+Kesobbi leallitas, automatikus inditas megszuntetese es torles:
+
+ sudo /etc/init.d/myservice stop
+ sudo update-rc.d -f myservice remove
+ sudo rm -- /etc/init.d/myservice
+ sudo systemctl daemon-reload
+
+A fenti parancsok csak a sajat, kozvetlenul masolt C<myservice> scriptre
+vonatkoznak; ne torolj vele mas programhoz tartozo init scriptet.
+Az C<update-rc.d remove> az inditasi regisztraciot torli; a C<stop>
+kulon, mert a regisztracio torlese nem allitja le a mar futo folyamatot.
+
+=head1 TEST CLEANUP
+
+Az install altal letrehozott hat tesztet a
+C</etc/dsInitd/templates/remove-test> kezeli. Megvizsgalja, hogy
+az elvart tesztsablonbol keszult-e a daemon; mas tartalmu fajlt
+biztonsagi okbol kihagy. Az eltavolitas elott explicit jovahagyast ker.
+A tisztito elobb leallitja a tesztfolyamatot, es csak sikeres
+leallitas utan tavolitja el a regisztraciot es a tesztfajlt.
+
+=head1 CONFIGURATION
+
+A nem futtathato fajl literal KEY='value' vagy KEY="value" sorokbol all.
+A PROCCESSCMD kotelezo, az ADD_COMMAND nem ervenyes parancs.
+PROCCESSNAME alapertelmezese a daemon fajlneve; ha meg van adva, egyeznie
+kell vele. RUNAS alapertelmezes root. A SHORTDESCRIPTION es DESCRIPTION
+alapertelmezes ures. Az opcionális LSB mezok: REQUIRED_START,
+REQUIRED_STOP, SHOULD_START, SHOULD_STOP, DEFAULT_START, DEFAULT_STOP.
+Hianyzo LSB mezo erteket a run-template szovege adja. A literal dollar
+jelek nem kerulnek shell-kiertekelesre. A Provides mindig a fajlnev.
+Konfiguracios parancskiertekeles nincs: a PROCCESSCMD fut csak inditaskor.
+A duplan megadott vagy ismeretlen kulcs es a rossz ertek hibaval jar.
+
+=head1 INSTALLATION
+
+Masold a dsInitd/ mappat a /etc/dsInitd ala, majd futtasd:
+
+ sudo /etc/dsInitd/templates/install
+ /etc/dsInitd/templates/remove-test
+
+A telepito eloszor a /sbin/dsinitctl symlinkre, majd a completion symlinkre
+es a kozponti automatikus rendszerinditasra kerdez ra. A tesztcsaladok
+telepitese es az uj daemonok interaktiv letrehozasa jelenleg kikommentelt,
+de a telepitoben a kodjuk megmaradt. Az aktualis Bash shellhez a
+C<source dsinitctl> parancsot hasznald; a telepito nem kepes a hivo shell
+allapotat modositani. Az interaktiv telepitohoz TTY kell. A teljes specifikacio:
+/etc/dsInitd/SPECIFIKACIO.md.
+
+=head1 COMPLETION
+
+A dsinitctl egy Bash/Perl polyglot script: normal inditaskor a Bash resz
+exec-kel atadja a futast a perl -x programnak. Az aktualis Bash-ban
+C<source dsinitctl> (vagy C<. dsinitctl>) eseten a Bash resz betolti a
+C</etc/dsInitd/templates/completion> fajlt, majd visszater a shellhez.
+Ez a jelenlegi shellben aktivalja a TAB-kiegeszitest. A PATH-ban a dsinitctl
+fajlnak elerhetonek kell lennie, ellenkezo esetben a teljes utvonal hasznalhato:
+
+ source /etc/dsInitd/dsinitctl
+
+A C<dsinitctl completion> csak a C<source dsinitctl> sort irja ki tajekoztatasul;
+onmagaban NEM aktivalja a szulo Bash kiegesziteset. Nem kell eval, ha a
+source parancsot kozvetlenul adod ki. Uj shell munkamenetben a source ujra
+szukseges, kiveve ha a kozponti bash-completion automatikusan betoltodik.
+A templates/completion tartalmazza a Bash completion fuggvenyt; a
+/usr/share/bash-completion/completions/dsinitctl abszolut symlink erre a fajlra.
+A kozponti bash_completion fajlt nem szabad lecserelni.
+Elso argumentum: parancsok; masodik: daemons fajlok, kivéve a letrehozo
+parancsok es a kozponti dsinitd-* akciok.
+
+=head1 REMOVE
+
+A C<remove NAME> leallitja a szolgaltatast, ellenorzi a leallast, elore
+validalja a sajat regisztraciokat, eltavolitja mindket tipusu sajat
+DSI/SYS bejegyzeset, vegul a daemons/ fajlt. Idegen fajlt nem ir felul
+es nem torol. Hibas leallitasnal a fajlokat erintetlenul hagyja.
+
+=head1 EXIT STATUS
+
+0 siker, 1 validacios/telepitesi hiba vagy a szolgalatatas hibaja,
+2 hianyzo parameter/hibas hasznalat (a shell standalone scriptnel),
+3 nem fut a status alatt (standalone). A parancs a daemon sajat
+visszateresi kodjat tovabbitja a kezelo muveleteknel.
+
+=head1 SECURITY
+
+Mutacios muveletekhez root jogosultsag kell; az idegen linkek felulirasa
+tilott. A daemon konfiguracio root altal ellenorzott kodot tartalmaz:
+a PROCCESSCMD shell-parancs, ezert a daemons/ fajlok nem lehetnek
+megbizhatatlan felhasznalok altal irhatok. A Screen inditasahoz a kis
+-dm kapcsolo kotelezo; a -Dm blokkolhatja a hivo terminalt.
+
+=cut
