@@ -1,1 +1,592 @@
+#!/bin/sh
+#
+# dsInitd interactive installer / interaktiv telepito
+#
 
+set -u
+
+VERSION="0.2.2"
+
+BASE="/etc/dsInitd"
+CTL="$BASE/dsinitctl"
+TEMPLATES="$BASE/templates"
+EXPECTED_DIR="$TEMPLATES"
+
+REPOSITORY="https://github.com/novarobot/dsInitd.git"
+
+TTY="/dev/tty"
+
+BOOTSTRAP_TMP=""
+
+
+error()
+{
+	printf 'HIBA / ERROR: %s\n' "$*" >&2
+}
+
+
+info()
+{
+	printf '%s\n' "$*"
+}
+
+
+tty_available()
+{
+	[ -r "$TTY" ] && [ -w "$TTY" ]
+}
+
+
+ask()
+{
+	QUESTION="$1"
+
+	while :
+	do
+		printf '%s [y/N] ' "$QUESTION" > "$TTY"
+
+		IFS= read -r ANSWER < "$TTY" || return 1
+
+		case "$ANSWER" in
+			y|Y)
+				return 0
+				;;
+
+			n|N|'')
+				return 1
+				;;
+
+			*)
+				printf '%s\n' \
+					'Csak egy betuvel valaszolj: y vagy n. / Answer with one letter only: y or n.' \
+					> "$TTY"
+				;;
+		esac
+	done
+}
+
+
+cleanup_bootstrap()
+{
+	if [ -n "${BOOTSTRAP_TMP:-}" ] && [ -d "$BOOTSTRAP_TMP" ]; then
+		rm -rf -- "$BOOTSTRAP_TMP"
+	fi
+}
+
+
+set_permissions()
+{
+	info ""
+	info "Futtatasi jogok beallitasa..."
+	info "Setting executable permissions..."
+
+	REQUIRED_EXECUTABLES="
+$BASE/dsinitctl
+$BASE/templates/install
+$BASE/templates/dsInitd-auto
+$BASE/templates/standalone-template
+"
+
+	for FILE in $REQUIRED_EXECUTABLES
+	do
+		if [ ! -f "$FILE" ]; then
+			error "Hianyzo fajl / Missing file: $FILE"
+			return 1
+		fi
+
+		if ! chmod 755 "$FILE"; then
+			error "Nem sikerult futtathatova tenni / Failed to make executable: $FILE"
+			return 1
+		fi
+	done
+
+	#
+	# Opcionalis segedprogram.
+	#
+	if [ -f "$BASE/templates/remove-test" ]; then
+		if ! chmod 755 "$BASE/templates/remove-test"; then
+			error "Nem sikerult futtathatova tenni / Failed to make executable: $BASE/templates/remove-test"
+			return 1
+		fi
+	fi
+
+	return 0
+}
+
+
+copy_repository()
+{
+	REPO="$1"
+
+	#
+	# Tamogatott repository struktura:
+	#
+	# 1:
+	#
+	#   etc/
+	#     dsInitd/
+	#       dsinitctl
+	#       templates/
+	#
+	# 2:
+	#
+	#   dsinitctl
+	#   templates/
+	#   daemons/
+	#   ...
+	#
+
+	if [ -f "$REPO/etc/dsInitd/dsinitctl" ] &&
+	   [ -f "$REPO/etc/dsInitd/templates/install" ]; then
+
+		SOURCE="$REPO/etc/dsInitd"
+
+	elif [ -f "$REPO/dsinitctl" ] &&
+	     [ -f "$REPO/templates/install" ]; then
+
+		SOURCE="$REPO"
+
+	else
+		error "A GitHub repository szerkezete nem felismerheto."
+		error "The GitHub repository structure is not recognized."
+		return 1
+	fi
+
+	if ! mkdir -p "$BASE"; then
+		error "Nem sikerult letrehozni / Failed to create: $BASE"
+		return 1
+	fi
+
+	#
+	# TAR-on keresztul masolunk, igy a .git biztosan nem kerul at.
+	#
+	if ! (
+		cd "$SOURCE" || exit 1
+
+		tar \
+			--exclude='./.git' \
+			--exclude='./.git/*' \
+			--exclude='./.github' \
+			--exclude='./.github/*' \
+			-cf - .
+	) | tar -C "$BASE" -xf -
+	then
+		error "A dsInitd fajlok masolasa sikertelen."
+		error "Failed to copy dsInitd files."
+		return 1
+	fi
+
+	return 0
+}
+
+
+bootstrap_install()
+{
+	info ""
+	info "============================================================"
+	info " dsInitd bootstrap installer"
+	info "============================================================"
+	info ""
+	info "A telepito nem a vegleges helyerol fut."
+	info "The installer is not running from its final location."
+	info ""
+	info "Vegleges hely / Final location:"
+	info ""
+	info "    $EXPECTED_DIR/install"
+	info ""
+	info "A telepito most kepes:"
+	info "The installer can now:"
+	info ""
+	info "  - telepiteni a Git es Screen csomagokat"
+	info "    install Git and Screen"
+	info ""
+	info "  - letolteni a dsInitd GitHub repository-t"
+	info "    download the dsInitd GitHub repository"
+	info ""
+	info "  - telepiteni a rendszert ide:"
+	info "    install the system into:"
+	info ""
+	info "      $BASE"
+	info ""
+	info "A .git es egyeb repository metaadatok nem kerulnek telepitesre."
+	info "The .git directory and repository metadata will not be installed."
+	info ""
+
+	if ! ask "Folytassam az automatikus telepitest? / Continue with automatic installation?"; then
+		info ""
+		info "Telepites megszakitva. / Installation cancelled."
+		exit 0
+	fi
+
+	if ! command -v apt-get >/dev/null 2>&1; then
+		error "Az apt-get nem talalhato."
+		error "apt-get was not found."
+		error "Az automatikus bootstrap jelenleg Debian/apt rendszerhez keszult."
+		error "Automatic bootstrap currently requires a Debian/apt based system."
+		exit 1
+	fi
+
+	info ""
+	info "Csomaglistak frissitese..."
+	info "Updating package lists..."
+	info ""
+
+	if ! apt-get update; then
+		error "Az apt-get update sikertelen. / apt-get update failed."
+		exit 1
+	fi
+
+	info ""
+	info "Git es Screen telepitese..."
+	info "Installing Git and Screen..."
+	info ""
+
+	if ! apt-get install -y git screen; then
+		error "A Git vagy Screen telepitese sikertelen."
+		error "Failed to install Git or Screen."
+		exit 1
+	fi
+
+	if ! command -v git >/dev/null 2>&1; then
+		error "A Git nem talalhato a telepites utan sem."
+		error "Git was not found after installation."
+		exit 1
+	fi
+
+	if ! command -v screen >/dev/null 2>&1; then
+		error "A Screen nem talalhato a telepites utan sem."
+		error "Screen was not found after installation."
+		exit 1
+	fi
+
+	BOOTSTRAP_TMP="$(mktemp -d /tmp/dsInitd-install.XXXXXX)" || {
+		error "Nem sikerult ideiglenes konyvtarat letrehozni."
+		error "Failed to create temporary directory."
+		exit 1
+	}
+
+	trap cleanup_bootstrap EXIT HUP INT TERM
+
+	info ""
+	info "Repository letoltese..."
+	info "Downloading repository..."
+	info ""
+	info "    $REPOSITORY"
+	info ""
+
+	if ! git clone \
+		--depth 1 \
+		"$REPOSITORY" \
+		"$BOOTSTRAP_TMP/repository"
+	then
+		error "A GitHub repository letoltese sikertelen."
+		error "Failed to download the GitHub repository."
+		exit 1
+	fi
+
+	info ""
+	info "dsInitd telepitese..."
+	info "Installing dsInitd..."
+	info ""
+
+	if ! copy_repository "$BOOTSTRAP_TMP/repository"; then
+		exit 1
+	fi
+
+	if ! set_permissions; then
+		exit 1
+	fi
+
+	if [ ! -x "$BASE/templates/install" ]; then
+		error "A telepites utan nem talalhato vagy nem futtathato:"
+		error "Installed file is missing or not executable:"
+		error "$BASE/templates/install"
+		exit 1
+	fi
+
+	info ""
+	info "Bootstrap telepites sikeres."
+	info "Bootstrap installation completed successfully."
+	info ""
+	info "Az ideiglenes Git repository torlese..."
+	info "Removing temporary Git repository..."
+
+	trap - EXIT HUP INT TERM
+
+	rm -rf -- "$BOOTSTRAP_TMP"
+	BOOTSTRAP_TMP=""
+
+	info ""
+	info "A vegleges telepito inditasa..."
+	info "Starting the installed setup program..."
+	info ""
+
+	exec "$BASE/templates/install"
+
+	error "Nem sikerult elinditani a vegleges telepitot."
+	error "Failed to start the installed setup program."
+
+	exit 1
+}
+
+
+#
+# ----------------------------------------------------------------------
+# 0. Alapellenorzesek
+# ----------------------------------------------------------------------
+#
+
+if [ "$(id -u)" -ne 0 ]; then
+	error "root jogosultsag szukseges (sudo). / Root privileges are required (sudo)."
+	exit 1
+fi
+
+if ! tty_available; then
+	error "Interaktiv terminal nem erheto el a /dev/tty eszkozon."
+	error "No interactive terminal is available through /dev/tty."
+	exit 1
+fi
+
+
+#
+# ----------------------------------------------------------------------
+# 1. Megallapitjuk, honnan fut a script
+# ----------------------------------------------------------------------
+#
+
+case "$0" in
+	*/*)
+		SCRIPT_PATH="$0"
+		;;
+
+	*)
+		SCRIPT_PATH="$(command -v "$0" 2>/dev/null || printf '%s' "$0")"
+		;;
+esac
+
+
+SCRIPT_DIR=""
+
+if [ -f "$SCRIPT_PATH" ]; then
+	SCRIPT_DIR="$(
+		CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" 2>/dev/null &&
+		pwd -P
+	)"
+fi
+
+
+EXPECTED_REAL=""
+
+if [ -d "$EXPECTED_DIR" ]; then
+	EXPECTED_REAL="$(
+		CDPATH= cd -- "$EXPECTED_DIR" 2>/dev/null &&
+		pwd -P
+	)"
+fi
+
+
+#
+# Pipe-bol futtatva peldaul:
+#
+#   wget -qO- URL | sudo bash
+#
+# $0 ilyenkor tipikusan "bash", tehat SCRIPT_DIR nem a templates lesz.
+#
+if [ "$SCRIPT_DIR" != "$EXPECTED_DIR" ] &&
+   [ "$SCRIPT_DIR" != "$EXPECTED_REAL" ]; then
+
+	bootstrap_install
+fi
+
+
+#
+# ----------------------------------------------------------------------
+# 2. Telepitett rendszer ellenorzese
+# ----------------------------------------------------------------------
+#
+
+info ""
+info "============================================================"
+info " dsInitd $VERSION installer"
+info "============================================================"
+info ""
+
+
+if [ ! -f "$CTL" ]; then
+	error "Hianyzo fajl / Missing file: $CTL"
+	exit 1
+fi
+
+
+if [ ! -f "$TEMPLATES/completion" ]; then
+	error "Hianyzo fajl / Missing file: $TEMPLATES/completion"
+	exit 1
+fi
+
+
+if ! command -v perl >/dev/null 2>&1; then
+	error "Perl szukseges. / Perl is required."
+	exit 1
+fi
+
+
+if ! command -v screen >/dev/null 2>&1; then
+	error "Screen szukseges. / Screen is required."
+	error "Telepites / Installation: apt install screen"
+	exit 1
+fi
+
+
+#
+# A Git repository-ban beallitott executable biteket is megtartjuk,
+# de biztonsagbol a telepito itt ujra beallitja a szuksegeseket.
+#
+if ! set_permissions; then
+	exit 1
+fi
+
+
+#
+# ----------------------------------------------------------------------
+# 3. /sbin/dsinitctl symlink
+# ----------------------------------------------------------------------
+#
+
+if ask "Hozzam letre a /sbin/dsinitctl symlinket? / Create the /sbin/dsinitctl symlink?"; then
+
+	TARGET="/sbin/dsinitctl"
+
+	if [ -L "$TARGET" ] &&
+	   [ "$(readlink "$TARGET")" = "$CTL" ]; then
+
+		info ""
+		info "A /sbin/dsinitctl symlink mar letezik."
+		info "The /sbin/dsinitctl symlink already exists."
+
+	elif [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+
+		error "Idegen fajl vagy link: $TARGET"
+		error "Foreign file or link exists: $TARGET"
+		error "Nem irjuk felul. / It will not be overwritten."
+
+	else
+
+		if ln -s "$CTL" "$TARGET"; then
+
+			info ""
+			info "A /sbin/dsinitctl symlink letrehozva."
+			info "/sbin/dsinitctl symlink created."
+
+		else
+			error "Nem sikerult letrehozni a /sbin/dsinitctl symlinket."
+			error "Failed to create /sbin/dsinitctl symlink."
+		fi
+	fi
+fi
+
+
+#
+# ----------------------------------------------------------------------
+# 4. Bash completion
+# ----------------------------------------------------------------------
+#
+
+if ask "Telepitsem a Bash TAB-kiegeszitest? / Install Bash TAB completion?"; then
+
+	TARGET="/usr/share/bash-completion/completions/dsinitctl"
+	SOURCE="$TEMPLATES/completion"
+
+	if ! mkdir -p /usr/share/bash-completion/completions; then
+		error "Nem sikerult letrehozni a bash-completion konyvtarat."
+		error "Failed to create bash-completion directory."
+		exit 1
+	fi
+
+	if [ -L "$TARGET" ] &&
+	   [ "$(readlink "$TARGET")" = "$SOURCE" ]; then
+
+		info ""
+		info "A TAB-kiegeszites mar telepitve van."
+		info "TAB completion is already installed."
+
+	elif [ -e "$TARGET" ] || [ -L "$TARGET" ]; then
+
+		error "Idegen fajl vagy link: $TARGET"
+		error "Foreign file or link exists: $TARGET"
+		error "Nem irjuk felul. / It will not be overwritten."
+
+	else
+
+		if ln -s "$SOURCE" "$TARGET"; then
+
+			info ""
+			info "Completion symlink telepitve."
+			info "Completion symlink installed."
+
+		else
+			error "Nem sikerult telepiteni a completion symlinket."
+			error "Failed to install completion symlink."
+		fi
+	fi
+
+
+	#
+	# Korabbi dsInitd verziok esetleges regi completion linkje.
+	#
+	OLD="/etc/bash_completion.d/dsinitctl"
+
+	if [ -L "$OLD" ] &&
+	   [ "$(readlink "$OLD")" = "$SOURCE" ]; then
+
+		if rm -- "$OLD"; then
+
+			info ""
+			info "A regi completion symlink eltavolitva."
+			info "Old completion symlink removed."
+
+		else
+			error "A regi completion symlink nem torolheto."
+			error "Failed to remove old completion symlink."
+		fi
+	fi
+
+
+	info ""
+	info "Az aktualis Bash shellben a kiegeszites betoltheto ezzel:"
+	info "Completion can be loaded into the current Bash shell with:"
+	info ""
+	info "    source dsinitctl"
+	info ""
+	info "Automatikus betolteshez a kozponti bash-completion rendszernek aktivnak kell lennie."
+	info "For automatic loading, the central bash-completion system must be enabled."
+	info ""
+fi
+
+
+#
+# ----------------------------------------------------------------------
+# 5. Kozponti dsInitd DSI automatikus inditas
+# ----------------------------------------------------------------------
+#
+
+if ask "Engedelyezzem a dsInitd kozponti automatikus rendszerinditasat? / Enable central dsInitd automatic startup?"; then
+
+	if ! "$CTL" dsinitd-enable; then
+		error "A kozponti inditas engedelyezese sikertelen."
+		error "Failed to enable central dsInitd automatic startup."
+	fi
+fi
+
+
+#
+# ----------------------------------------------------------------------
+# Vege
+# ----------------------------------------------------------------------
+#
+
+info ""
+info "============================================================"
+info " A dsInitd $VERSION telepito befejezodott."
+info " dsInitd $VERSION installation has finished."
+info "============================================================"
+info ""
