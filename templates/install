@@ -1,3 +1,4 @@
+```sh
 #!/bin/sh
 #
 # dsInitd interactive installer / interaktiv telepito
@@ -114,6 +115,21 @@ $BASE/templates/standalone-template
 }
 
 
+remove_repository_docs()
+{
+	info ""
+	info "Repository-specifikus konyvtari dokumentaciok eltavolitasa..."
+	info "Removing repository-only directory documentation..."
+
+	rm -f -- \
+		"$BASE/daemons/daemons.md" \
+		"$BASE/inits/inits.md" \
+		"$BASE/init.d/initd.md"
+
+	return 0
+}
+
+
 copy_repository()
 {
 	REPO="$1"
@@ -175,6 +191,8 @@ copy_repository()
 		error "Failed to copy dsInitd files."
 		return 1
 	fi
+
+	remove_repository_docs
 
 	return 0
 }
@@ -590,3 +608,4 @@ info " A dsInitd $VERSION telepito befejezodott."
 info " dsInitd $VERSION installation has finished."
 info "============================================================"
 info ""
+```
