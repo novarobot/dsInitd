@@ -50,7 +50,6 @@ The project supports both fully standalone init scripts and compact dsInit confi
     ├── dsInitd-auto
     ├── completion
     ├── install
-    ├── remove-test
     ├── test-standalone
     └── test-dsInit
 ```
