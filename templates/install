@@ -101,16 +101,6 @@ $BASE/templates/standalone-template
 		fi
 	done
 
-	#
-	# Opcionalis segedprogram.
-	#
-	if [ -f "$BASE/templates/remove-test" ]; then
-		if ! chmod 755 "$BASE/templates/remove-test"; then
-			error "Nem sikerult futtathatova tenni / Failed to make executable: $BASE/templates/remove-test"
-			return 1
-		fi
-	fi
-
 	return 0
 }
 
