@@ -579,11 +579,6 @@ Részletes beépített dokumentáció:
 perldoc /etc/dsInitd/dsinitctl
 ```
 
-
 ---
-
-## License
-
-Choose the license that best fits the project before publishing the repository.
 
 For an open-source system utility, common options include MIT, BSD-2-Clause, BSD-3-Clause and GPL-3.0.
