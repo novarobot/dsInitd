@@ -9,6 +9,5 @@ A `templates/` mappa a dsInitd sablonjait és segédprogramjait tartalmazza.
 * `dsInitd-auto.enabled` – symlink, amely jelzi, hogy a központi dsInitd indítás engedélyezett.
 * `completion` – Bash TAB-kiegészítés a `dsinitctl` parancshoz.
 * `install` – a dsInitd telepítő és alapbeállító scriptje.
-* `remove-test` – az install által létrehozott tesztdaemonok eltávolítása.
 * `test-standalone` – standalone tesztdaemon sablon.
 * `test-dsInit` – dsInit tesztdaemon konfigurációs sablon.
