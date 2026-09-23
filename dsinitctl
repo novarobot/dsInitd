@@ -118,8 +118,7 @@ sub parse_config
 		$src =~ /\G[ \t]*(?:\#[^\n]*)?(?:\r?\n|\z)/gc or fail("szemet az ertek utan: $key ($file)");
 		$config{$key} = $value;
 	}
-	defined($config{PROCCESSCMD}) && $config{PROCCESSCMD} =~ /\S/ && $config{PROCCESSCMD} ne 'ADD_COMMAND'
-		or fail("hianyzo vagy kitoltetlen PROCCESSCMD: $file");
+	defined($config{PROCCESSCMD}) && $config{PROCCESSCMD} =~ /\S/ && $config{PROCCESSCMD} ne 'ADD_COMMAND' or fail("hianyzo vagy kitoltetlen PROCCESSCMD: $file");
 	$config{PROCCESSNAME} = $name unless defined($config{PROCCESSNAME}) && length($config{PROCCESSNAME});
 	name_check($config{PROCCESSNAME});
 	$config{PROCCESSNAME} eq $name or fail("PROCCESSNAME nem egyezik a fajlnevevel: $name");
@@ -667,201 +666,535 @@ __END__
 
 =head1 NAME
 
-dsinitctl - dsInitd Perl alapu szolgaltatasvezerlo
+dsinitctl - dsInitd Perl alapú szolgáltatásvezérlő
 
 =head1 SYNOPSIS
 
- sudo /etc/dsInitd/dsinitctl create-dsInit mydaemon
- sudo /etc/dsInitd/dsinitctl enable-sys mydaemon
- sudo /etc/dsInitd/dsinitctl start mydaemon
- sudo /etc/dsInitd/dsinitctl status mydaemon
- sudo /etc/dsInitd/dsinitctl dsinitd-status
+  sudo /etc/dsInitd/dsinitctl create-dsInit mydaemon
+  sudo /etc/dsInitd/dsinitctl enable-sys mydaemon
+  sudo /etc/dsInitd/dsinitctl start mydaemon
+  sudo /etc/dsInitd/dsinitctl status mydaemon
+  sudo /etc/dsInitd/dsinitctl dsinitd-status
 
 =head1 DESCRIPTION
 
-A dsInitd ket daemonformatumot kezel. A futtathato daemons/ fajlok
-onallo SysV shell scriptek; a nem futtathato fajlok adatok, melyekbol a
-vezerlo az eredeti standalone-template alapjan memoriaban shell scriptet
-allit elo. A teljes futtatoscriptet nem menti le lemezre.
+A dsInitd kétféle daemonformátumot kezel.
+
+A C<daemons/> könyvtárban található futtatható fájlok önálló,
+SysV-kompatibilis shell scriptek.
+
+A nem futtatható fájlok dsInit konfigurációk. Ezekből a
+C<dsinitctl> a C<standalone-template> alapján futás közben,
+memóriában állítja elő a teljes shell scriptet.
+
+A dinamikusan összeállított futtatószkript nem kerül tartósan
+lemezre.
 
 =head1 DIRECTORY STRUCTURE
 
- /etc/dsInitd/dsinitctl
- /etc/dsInitd/templates/standalone-template
- /etc/dsInitd/templates/dsInit-template
- /etc/dsInitd/templates/run-template
- /etc/dsInitd/templates/dsInitd-auto
- /etc/dsInitd/templates/dsInitd-auto.enabled (symlink, ha aktiv)
- /etc/dsInitd/templates/completion
- /etc/dsInitd/templates/install
- /etc/dsInitd/templates/remove-test
- /etc/dsInitd/templates/test-standalone
- /etc/dsInitd/templates/test-dsInit
- /etc/dsInitd/SPECIFIKACIO.md
- /etc/dsInitd/daemons/
- /etc/dsInitd/inits/
- /etc/dsInitd/init.d/
+  /etc/dsInitd/dsinitctl
+
+  /etc/dsInitd/daemons/
+  /etc/dsInitd/inits/
+  /etc/dsInitd/init.d/
+
+  /etc/dsInitd/templates/standalone-template
+  /etc/dsInitd/templates/dsInit-template
+  /etc/dsInitd/templates/run-template
+  /etc/dsInitd/templates/dsInitd-auto
+  /etc/dsInitd/templates/dsInitd-auto.enabled
+  /etc/dsInitd/templates/completion
+  /etc/dsInitd/templates/install
+  /etc/dsInitd/templates/test-standalone
+  /etc/dsInitd/templates/test-dsInit
+
+A C<dsInitd-auto.enabled> csak akkor létezik, ha a központi
+DSI automatikus indítás engedélyezve van.
 
 =head1 COMMANDS
 
-=head2 Service actions
+=head2 Szolgáltatáskezelés
 
- start NAME, stop NAME, restart NAME, status NAME, show NAME, reshow NAME
+  start NAME
+  stop NAME
+  restart NAME
+  status NAME
+  show NAME
+  reshow NAME
 
-A futtathato standalone fajl megkapja az akciot argumentumkent. A dsInit
-konfiguracio eseten a runtime shell csak memoriaban jon letre. A show
-es reshow interaktiv, Screenbol Ctrl+A majd D a levalasztas.
+A futtatható standalone daemon közvetlenül megkapja az akciót
+első argumentumként.
 
-=head2 Registration
+dsInit konfiguráció esetén a C<dsinitctl> memóriában előállítja
+a teljes futtatószkriptet, majd végrehajtja a megadott műveletet.
 
- enable NAME, disable NAME
- enable-dsi NAME, disable-dsi NAME
- enable-sys NAME, disable-sys NAME
+A C<show> csatlakozik a szolgáltatáshoz tartozó GNU Screen
+munkamenethez.
 
-Az alapertelmezett enable/disable a dsInitd-auto.enabled jelzotol fugg:
-letezo ervenyes symlink = DSI, egyebkent SYS. A SYS es DSI mod nem
-hasznalhato egyszerre, es a program nem valt at automatikusan.
+A Screen munkamenetről leválás:
 
-DSI eseten a daemon inditoja az inits/ konyvtarba kerul. SYS eseten
-az init.d/ mappaba, innen abszolut symlink mutat az /etc/init.d/ ala,
-majd update-rc.d regisztralja. A generalt dsInit inditok mindket esetben
-kulon fajlok, egyedi LSB fejleccel. A kesobbi template/config valtozas
-nem frissiti a mar generalt inditokat. A letiltas nem allitja le a
-futo folyamatot. Az idegen fajlok nem irhatok felul.
+  Ctrl+A, majd D
 
-=head2 Creation and information
+A C<reshow> először újraindítja a szolgáltatást, majd csatlakozik
+a Screen munkamenethez.
 
- create-standalone NAME / cs NAME
- create-dsInit NAME / cd NAME
- help NAME / man NAME / read NAME / edit NAME
- remove NAME
+=head2 Regisztráció
 
-A letrehozas masolja a sablont, beallitja a nevet, jogosultsagot,
-interaktiv TTY mellett elinditja a nanot es felajanlja az enable-t.
-Nem interaktiv futasnal kihagyja a szerkesztot es a kerdest.
-A dsInit help/man a SHORTDESCRIPTION/DESCRIPTION erteket, a read a
-memoriaban osszeallitott futtatoscriptet irja ki. Standalone eseten a
-help/man/read a teljes fajlt mutatja.
+  enable NAME
+  disable NAME
 
-=head2 Central manager
+  enable-dsi NAME
+  disable-dsi NAME
 
- dsinitd-enable, dsinitd-disable, dsinitd-status, dsinitd-help
- completion
+  enable-sys NAME
+  disable-sys NAME
 
-A kozponti indito az inits/ mappat jarja be, hibas szolgalatatasnal
-folytatja a tobbit. A dsinitd-enable letrehozza a dsInitd-auto.enabled
-jelzo symlinket es az /etc/init.d/dsInitd-auto symlinket, majd
-update-rc.d defaults regisztraciot vegez. A disable ellenkezo iranyban
-eltavolitja a regisztraciot, de a futo programokat nem allitja le.
+A SYS és DSI regisztráció kölcsönösen kizárja egymást.
 
-=head1 STANDALONE WITHOUT DSINITCTL
+Egy daemon nem lehet egyszerre mindkét módban engedélyezve.
 
-Standalone szolgaltatas a dsinitctl vezerlo nelkul is hasznalhato.
-Masold at a standalone-template fajlt onallo scriptkent, allitsd be a
-C<Provides:> es C<PROCCESSNAME> erteket azonos, egyedi nevvel, valamint a
-C<PROCCESSCMD> parancsot. Pelda: az egyedi nev C<myservice>:
+=head3 DSI mód
 
- sudo cp /etc/dsInitd/templates/standalone-template /etc/init.d/myservice
- sudo nano /etc/init.d/myservice
- sudo chmod 755 /etc/init.d/myservice
- sudo update-rc.d myservice defaults
- sudo systemctl daemon-reload
- sudo /etc/init.d/myservice start
- sudo /etc/init.d/myservice status
+DSI módban a szolgáltatás indítója a következő könyvtárba kerül:
 
-A szerkesztoben a C<TEMPLATE> nevet mind a C<# Provides:>, mind a
-C<PROCCESSNAME> sorban csereld C<myservice> ertekre, es az
-C<ADD_COMMAND> helyere valodi parancs keruljon. Ezt a peldat ne
-hajtsd vegre a sablon kitoltese nelkul.
+  /etc/dsInitd/inits/
 
-Kesobbi leallitas, automatikus inditas megszuntetese es torles:
+A központi C<dsInitd-auto> rendszerindításkor ezeket a
+szolgáltatásokat kezeli.
 
- sudo /etc/init.d/myservice stop
- sudo update-rc.d -f myservice remove
- sudo rm -- /etc/init.d/myservice
- sudo systemctl daemon-reload
+=head3 SYS mód
 
-A fenti parancsok csak a sajat, kozvetlenul masolt C<myservice> scriptre
-vonatkoznak; ne torolj vele mas programhoz tartozo init scriptet.
-Az C<update-rc.d remove> az inditasi regisztraciot torli; a C<stop>
-kulon, mert a regisztracio torlese nem allitja le a mar futo folyamatot.
+SYS módban az indító a következő könyvtárba kerül:
 
-=head1 TEST CLEANUP
+  /etc/dsInitd/init.d/
 
-Az install altal letrehozott hat tesztet a
-C</etc/dsInitd/templates/remove-test> kezeli. Megvizsgalja, hogy
-az elvart tesztsablonbol keszult-e a daemon; mas tartalmu fajlt
-biztonsagi okbol kihagy. Az eltavolitas elott explicit jovahagyast ker.
-A tisztito elobb leallitja a tesztfolyamatot, es csak sikeres
-leallitas utan tavolitja el a regisztraciot es a tesztfajlt.
+Innen abszolút szimbolikus link mutat a következő helyre:
+
+  /etc/init.d/
+
+A szolgáltatást az C<update-rc.d> regisztrálja a Debian
+futási szintjeihez.
+
+dsInit konfiguráció esetén a DSI és SYS indítók is külön,
+generált fájlok, saját LSB fejléccel.
+
+A már generált indítók később nem frissülnek automatikusan
+a template vagy a konfiguráció megváltoztatásakor.
+
+A C<disable>, C<disable-dsi> és C<disable-sys> műveletek
+nem állítják le az éppen futó szolgáltatást.
+
+=head3 Automatikus módválasztás
+
+Az egyszerű:
+
+  enable NAME
+
+és:
+
+  disable NAME
+
+parancs a C<dsInitd-auto.enabled> állapota alapján választ módot.
+
+Ha a központi dsInitd automatikus indítás aktív, akkor DSI módot
+használ.
+
+Ellenkező esetben SYS módot használ.
+
+=head2 Létrehozás
+
+  create-standalone NAME
+  cs NAME
+
+  create-dsInit NAME
+  cd NAME
+
+A C<create-standalone> és rövidített C<cs> parancs a
+C<standalone-template> fájlból hoz létre teljes, futtatható
+standalone daemont.
+
+A C<create-dsInit> és rövidített C<cd> parancs a
+C<dsInit-template> alapján hoz létre nem futtatható dsInit
+konfigurációt.
+
+A létrehozott daemon neve bekerül a megfelelő konfigurációs
+mezőkbe.
+
+Interaktív terminál esetén a program a létrehozott fájlt
+C<nano> szerkesztőben megnyitja, majd felajánlja az
+engedélyezést.
+
+Nem interaktív futás esetén a szerkesztés és az automatikus
+engedélyezési kérdés kimarad.
+
+=head2 Információ és szerkesztés
+
+  help NAME
+  man NAME
+  read NAME
+  edit NAME
+
+dsInit konfiguráció esetén:
+
+=over 4
+
+=item C<help>
+
+A C<SHORTDESCRIPTION> mezőt írja ki.
+
+=item C<man>
+
+A C<DESCRIPTION> mezőt írja ki.
+
+=item C<read>
+
+Kiírja a memóriában összeállított teljes futtatószkriptet.
+
+=item C<edit>
+
+Megnyitja az eredeti daemon konfigurációt C<nano> szerkesztőben.
+
+=back
+
+Standalone daemon esetén a C<help>, C<man> és C<read> a teljes
+standalone fájlt jeleníti meg.
+
+=head2 Daemon eltávolítása
+
+  remove NAME
+
+A C<remove> művelet:
+
+=over 4
+
+=item 1.
+
+Leállítja a szolgáltatást.
+
+=item 2.
+
+Ellenőrzi, hogy a szolgáltatás ténylegesen leállt-e.
+
+=item 3.
+
+Eltávolítja a DSI és/vagy SYS regisztrációt.
+
+=item 4.
+
+Törli a daemon fájlját a C<daemons/> könyvtárból.
+
+=back
+
+Ha a leállítás sikertelen, vagy nem igazolható, a daemon nem
+kerül törlésre.
+
+A program idegen fájlt vagy ismeretlen eredetű init scriptet
+nem töröl.
+
+=head2 Központi dsInitd kezelés
+
+  dsinitd-enable
+  dsinitd-disable
+  dsinitd-status
+  dsinitd-help
+
+A C<dsinitd-enable> létrehozza a következő jelző symlinket:
+
+  /etc/dsInitd/templates/dsInitd-auto.enabled
+
+A link a következő fájlra mutat:
+
+  /etc/dsInitd/templates/dsInitd-auto
+
+Ezután létrejön a központi SysV regisztráció is:
+
+  /etc/init.d/dsInitd-auto
+
+A szolgáltatás az C<update-rc.d> segítségével kerül
+rendszerindításra regisztrálásra.
+
+A C<dsinitd-disable> eltávolítja ezt a regisztrációt és a
+jelző symlinket.
+
+A már futó daemonokat a C<dsinitd-disable> nem állítja le.
+
+A C<dsinitd-status> listázza az összes daemon főbb állapotát,
+beleértve:
+
+=over 4
+
+=item *
+
+daemon típusát
+
+=item *
+
+DSI regisztrációt
+
+=item *
+
+SYS regisztrációt
+
+=item *
+
+SysV futási szinteket
+
+=item *
+
+C</etc/init.d> rendszerlink állapotát
+
+=item *
+
+tényleges futási állapotot
+
+=back
 
 =head1 CONFIGURATION
 
-A nem futtathato fajl literal KEY='value' vagy KEY="value" sorokbol all.
-A PROCCESSCMD kotelezo, az ADD_COMMAND nem ervenyes parancs.
-PROCCESSNAME alapertelmezese a daemon fajlneve; ha meg van adva, egyeznie
-kell vele. RUNAS alapertelmezes root. A SHORTDESCRIPTION es DESCRIPTION
-alapertelmezes ures. Az opcionális LSB mezok: REQUIRED_START,
-REQUIRED_STOP, SHOULD_START, SHOULD_STOP, DEFAULT_START, DEFAULT_STOP.
-Hianyzo LSB mezo erteket a run-template szovege adja. A literal dollar
-jelek nem kerulnek shell-kiertekelesre. A Provides mindig a fajlnev.
-Konfiguracios parancskiertekeles nincs: a PROCCESSCMD fut csak inditaskor.
-A duplan megadott vagy ismeretlen kulcs es a rossz ertek hibaval jar.
+A dsInit daemon nem futtatható konfigurációs fájl.
+
+A konfiguráció a következő formát használja:
+
+  KEY='érték'
+
+vagy:
+
+  KEY="érték"
+
+A konfigurációs értékeket a C<dsinitctl> literálisan dolgozza fel.
+A konfiguráció beolvasása nem hajt végre shell parancsokat.
+
+A C<PROCCESSCMD> tartalma csak a daemon tényleges indításakor
+kerül shellként végrehajtásra.
+
+=head2 Kötelező mező
+
+  PROCCESSCMD
+
+A mezőnek érvényes parancsot kell tartalmaznia.
+
+Az C<ADD_COMMAND> érték kitöltetlen sablonnak számít és nem
+engedélyezhető.
+
+=head2 Opcionális mezők
+
+  PROCCESSNAME
+  RUNAS
+  SHORTDESCRIPTION
+  DESCRIPTION
+
+  REQUIRED_START
+  REQUIRED_STOP
+  SHOULD_START
+  SHOULD_STOP
+  DEFAULT_START
+  DEFAULT_STOP
+
+Ha a C<PROCCESSNAME> hiányzik, a daemon fájlneve lesz az
+alapértelmezett érték.
+
+Ha meg van adva, egyeznie kell a daemon fájlnevével.
+
+A C<RUNAS> alapértelmezett értéke:
+
+  root
+
+A C<SHORTDESCRIPTION> és C<DESCRIPTION> alapértelmezés szerint
+üres.
+
+A hiányzó LSB mezők alapértékeit a C<run-template> biztosítja.
+
+A C<Provides> értéke mindig a daemon neve.
+
+=head1 LSB INIT INFORMATION
+
+A dsInit konfiguráció az alábbi LSB mezőket írhatja felül:
+
+  REQUIRED_START
+  REQUIRED_STOP
+  SHOULD_START
+  SHOULD_STOP
+  DEFAULT_START
+  DEFAULT_STOP
+
+Példa:
+
+  REQUIRED_START='$local_fs $remote_fs'
+  REQUIRED_STOP='$local_fs $remote_fs'
+  SHOULD_START='$network'
+  SHOULD_STOP='$network'
+  DEFAULT_START='2 3 4 5'
+  DEFAULT_STOP='0 1 6'
+
+Ezekből a generált indító például a következő LSB mezőket
+állítja elő:
+
+  # Required-Start:    $local_fs $remote_fs
+  # Required-Stop:     $local_fs $remote_fs
+  # Should-Start:      $network
+  # Should-Stop:       $network
+  # Default-Start:     2 3 4 5
+  # Default-Stop:      0 1 6
+
+=head1 STANDALONE WITHOUT DSINITCTL
+
+A standalone szolgáltatás a C<dsinitctl> használata nélkül is
+telepíthető.
+
+Másold le a standalone sablont:
+
+  sudo cp /etc/dsInitd/templates/standalone-template /etc/init.d/mydaemon
+
+Szerkeszd:
+
+  sudo nano /etc/init.d/mydaemon
+
+A fájlban legalább a következőket kell beállítani:
+
+  # Provides:          mydaemon
+  PROCCESSNAME="mydaemon"
+  PROCCESSCMD='valódi parancs'
+
+Ezután:
+
+  sudo chmod 755 /etc/init.d/mydaemon
+  sudo update-rc.d mydaemon defaults
+  sudo systemctl daemon-reload
+
+Indítás:
+
+  sudo /etc/init.d/mydaemon start
+
+Állapot:
+
+  sudo /etc/init.d/mydaemon status
+
+Leállítás:
+
+  sudo /etc/init.d/mydaemon stop
+
+Automatikus indítás megszüntetése:
+
+  sudo update-rc.d -f mydaemon remove
+
+A script törlése:
+
+  sudo rm -- /etc/init.d/mydaemon
+  sudo systemctl daemon-reload
+
+Az C<update-rc.d remove> csak a rendszerindítási regisztrációt
+távolítja el. A már futó szolgáltatást külön le kell állítani.
 
 =head1 INSTALLATION
 
-Masold a dsInitd/ mappat a /etc/dsInitd ala, majd futtasd:
+A dsInitd közvetlenül GitHubról is telepíthető:
 
- sudo /etc/dsInitd/templates/install
+  wget -qO- https://raw.githubusercontent.com/novarobot/dsInitd/main/templates/install | sudo bash
 
-A telepito eloszor a /sbin/dsinitctl symlinkre, majd a completion symlinkre
-es a kozponti automatikus rendszerinditasra kerdez ra. A tesztcsaladok
-telepitese es az uj daemonok interaktiv letrehozasa jelenleg kikommentelt,
-de a telepitoben a kodjuk megmaradt. Az aktualis Bash shellhez a
-C<source dsinitctl> parancsot hasznald; a telepito nem kepes a hivo shell
-allapotat modositani. Az interaktiv telepitohoz TTY kell.
+A bootstrap telepítő szükség esetén telepíti a Git és GNU Screen
+csomagokat, majd letölti a repository-t és telepíti a rendszert
+a következő helyre:
 
-=head1 COMPLETION
+  /etc/dsInitd
 
-A dsinitctl egy Bash/Perl polyglot script: normal inditaskor a Bash resz
-exec-kel atadja a futast a perl -x programnak. Az aktualis Bash-ban
-C<source dsinitctl> (vagy C<. dsinitctl>) eseten a Bash resz betolti a
-C</etc/dsInitd/templates/completion> fajlt, majd visszater a shellhez.
-Ez a jelenlegi shellben aktivalja a TAB-kiegeszitest. A PATH-ban a dsinitctl
-fajlnak elerhetonek kell lennie, ellenkezo esetben a teljes utvonal hasznalhato:
+A Git repository metaadatai, például a C<.git> könyvtár, nem
+kerülnek a telepített rendszerbe.
 
- source /etc/dsInitd/dsinitctl
+A telepítő beállítja a szükséges futtatási jogokat és
+felajánlja:
 
-A C<dsinitctl completion> csak a C<source dsinitctl> sort irja ki tajekoztatasul;
-onmagaban NEM aktivalja a szulo Bash kiegesziteset. Nem kell eval, ha a
-source parancsot kozvetlenul adod ki. Uj shell munkamenetben a source ujra
-szukseges, kiveve ha a kozponti bash-completion automatikusan betoltodik.
-A templates/completion tartalmazza a Bash completion fuggvenyt; a
-/usr/share/bash-completion/completions/dsinitctl abszolut symlink erre a fajlra.
-A kozponti bash_completion fajlt nem szabad lecserelni.
-Elso argumentum: parancsok; masodik: daemons fajlok, kivéve a letrehozo
-parancsok es a kozponti dsinitd-* akciok.
+=over 4
 
-=head1 REMOVE
+=item *
 
-A C<remove NAME> leallitja a szolgaltatast, ellenorzi a leallast, elore
-validalja a sajat regisztraciokat, eltavolitja mindket tipusu sajat
-DSI/SYS bejegyzeset, vegul a daemons/ fajlt. Idegen fajlt nem ir felul
-es nem torol. Hibas leallitasnal a fajlokat erintetlenul hagyja.
+a C</sbin/dsinitctl> symlink létrehozását;
+
+=item *
+
+a Bash TAB-kiegészítés telepítését;
+
+=item *
+
+a központi dsInitd automatikus rendszerindítás engedélyezését.
+
+=back
+
+=head1 BASH COMPLETION
+
+A C<dsinitctl> Bash/Perl polyglot fájl.
+
+Az aktuális Bash munkamenetben a TAB-kiegészítés közvetlenül
+betölthető:
+
+  source dsinitctl
+
+A completion definíció helye:
+
+  /etc/dsInitd/templates/completion
+
+Telepítés esetén a következő symlink mutat erre:
+
+  /usr/share/bash-completion/completions/dsinitctl
+
+A TAB-kiegészítés támogatja a C<dsinitctl> parancsokat és a
+C<daemons/> könyvtárban található daemonneveket.
+
+=head1 FILE PERMISSIONS
+
+A standalone daemonok futtatható fájlok.
+
+A dsInit konfigurációk nem futtatható fájlok.
+
+A daemon definícióknak root tulajdonban kell lenniük, és
+group/other írási jogosultság nem megengedett.
+
+A telepítő a szükséges futtatási jogokat automatikusan beállítja
+a következő fő fájlokra:
+
+  /etc/dsInitd/dsinitctl
+  /etc/dsInitd/templates/install
+  /etc/dsInitd/templates/dsInitd-auto
+  /etc/dsInitd/templates/standalone-template
 
 =head1 EXIT STATUS
 
-0 siker, 1 validacios/telepitesi hiba vagy a szolgalatatas hibaja,
-2 hianyzo parameter/hibas hasznalat (a shell standalone scriptnel),
-3 nem fut a status alatt (standalone). A parancs a daemon sajat
-visszateresi kodjat tovabbitja a kezelo muveleteknel.
+A C<dsinitctl> általános visszatérési értékei:
+
+  0   sikeres végrehajtás
+  1   validációs, telepítési vagy szolgáltatáshiba
+  2   hibás használat vagy hiányzó paraméter
+  3   a szolgáltatás nem fut
+
+Szolgáltatáskezelési műveleteknél a program lehetőség szerint
+továbbítja az adott daemon saját visszatérési kódját.
 
 =head1 SECURITY
 
-Mutacios muveletekhez root jogosultsag kell; az idegen linkek felulirasa
-tilott. A daemon konfiguracio root altal ellenorzott kodot tartalmaz:
-a PROCCESSCMD shell-parancs, ezert a daemons/ fajlok nem lehetnek
-megbizhatatlan felhasznalok altal irhatok. A Screen inditasahoz a kis
--dm kapcsolo kotelezo; a -Dm blokkolhatja a hivo terminalt.
+A rendszerállapotot módosító műveletekhez root jogosultság
+szükséges.
+
+A C<dsinitctl> nem ír felül idegen fájlokat és ismeretlen
+szimbolikus linkeket.
+
+A dsInit konfiguráció C<PROCCESSCMD> mezője shell parancsot
+tartalmaz, ezért a daemon konfigurációs fájlok csak megbízható,
+root által felügyelt helyen tárolhatók.
+
+A program ellenőrzi a daemon fájlok tulajdonosát és
+jogosultságait.
+
+A GNU Screen háttérindításához a kisbetűs C<-dm> kapcsoló
+használatos.
+
+A C<-Dm> kapcsoló egyes környezetekben blokkolhatja a hívó
+terminált, ezért azt a dsInitd nem használja.
+
+=head1 SEE ALSO
+
+  perldoc /etc/dsInitd/dsinitctl
+
+  screen(1)
+  update-rc.d(8)
+  systemctl(1)
 
 =cut
