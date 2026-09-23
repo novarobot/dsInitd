@@ -580,5 +580,3 @@ perldoc /etc/dsInitd/dsinitctl
 ```
 
 ---
-
-For an open-source system utility, common options include MIT, BSD-2-Clause, BSD-3-Clause and GPL-3.0.
