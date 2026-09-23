@@ -813,15 +813,13 @@ A duplan megadott vagy ismeretlen kulcs es a rossz ertek hibaval jar.
 Masold a dsInitd/ mappat a /etc/dsInitd ala, majd futtasd:
 
  sudo /etc/dsInitd/templates/install
- /etc/dsInitd/templates/remove-test
 
 A telepito eloszor a /sbin/dsinitctl symlinkre, majd a completion symlinkre
 es a kozponti automatikus rendszerinditasra kerdez ra. A tesztcsaladok
 telepitese es az uj daemonok interaktiv letrehozasa jelenleg kikommentelt,
 de a telepitoben a kodjuk megmaradt. Az aktualis Bash shellhez a
 C<source dsinitctl> parancsot hasznald; a telepito nem kepes a hivo shell
-allapotat modositani. Az interaktiv telepitohoz TTY kell. A teljes specifikacio:
-/etc/dsInitd/SPECIFIKACIO.md.
+allapotat modositani. Az interaktiv telepitohoz TTY kell.
 
 =head1 COMPLETION
 
