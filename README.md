@@ -578,5 +578,4 @@ Részletes beépített dokumentáció:
 ```bash
 perldoc /etc/dsInitd/dsinitctl
 ```
-
 ---
